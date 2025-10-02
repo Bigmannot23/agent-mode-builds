@@ -1,0 +1,233 @@
+{
+  "name": "Lexvion – Agent (Windows)",
+  "nodes": [
+    {
+      "id": "Webhook",
+      "name": "Webhook /agent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "webhookMethods": {
+        "POST": true
+      },
+      "position": [240, 320],
+      "parameters": {
+        "path": "agent",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "Validate",
+      "name": "Function:validate",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [520, 320],
+      "parameters": {
+        "functionCode": "const schema={type:'object',properties:{query:{type:'string',minLength:1},context:{type:'object'},approve:{type:'boolean'},clientId:{type:'string'}},required:['query'],additionalProperties:false};function bad(m){throw new Error(m);}const b=$json.body??{};if(typeof b!=='object'||Array.isArray(b))bad('Payload must be object');if(!b.query||typeof b.query!=='string')bad('Missing/invalid query');if('context' in b&&typeof b.context!=='object')bad('context must be object');if('approve' in b&&typeof b.approve!=='boolean')bad('approve must be boolean');if('clientId' in b&&typeof b.clientId!=='string')bad('clientId must be string');return b;"
+      }
+    },
+    {
+      "id": "Plan",
+      "name": "OpenAI:plan",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 2,
+      "position": [800, 320],
+      "credentials": {
+        "openAiApi": { "id": "__REPLACE_ME__" }
+      },
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "You are the Lexvion Operator Agent. ALWAYS return a JSON object with keys tool, args, summary. tool ∈ {none,google_sheets.read,google_sheets.append,notion.query,http.request}. Include args.needsApproval for side effects. No markdown.",
+        "messages": "={{ [ { role:'user', content: JSON.stringify($json) } ] }}",
+        "responseFormat": "json_object",
+        "temperature": 0.2,
+        "maxTokens": 600
+      }
+    },
+    {
+      "id": "Parse",
+      "name": "Function:parse_tool",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1040, 320],
+      "parameters": {
+        "functionCode": "const raw = $json; const out = raw.choices?.[0]?.message?.content || raw?.message || raw; let obj; try { obj = typeof out === 'string' ? JSON.parse(out) : out; } catch (e) { throw new Error('Planner did not return JSON'); } if(!obj.tool) obj.tool = 'none'; obj.args = obj.args || {}; return obj;"
+      }
+    },
+    {
+      "id": "NeedsApproval",
+      "name": "IF:needs_approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1260, 240],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.args.needsApproval === true && $items('Function:validate')[0].json.approve !== true }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ReviewRequired",
+      "name": "Respond:Review Required",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1480, 120],
+      "parameters": {
+        "responseCode": 200,
+        "responseBody": "={{ {status:'REVIEW_REQUIRED', summary: $items('Function:parse_tool')[0].json.summary, tool:$items('Function:parse_tool')[0].json.tool, args:$items('Function:parse_tool')[0].json.args} }}"
+      }
+    },
+    {
+      "id": "Router",
+      "name": "Switch:on.tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1260, 420],
+      "parameters": {
+        "value": "={{ $json.tool }}",
+        "rules": [
+          { "operation": "equal", "value": "google_sheets.read" },
+          { "operation": "equal", "value": "google_sheets.append" },
+          { "operation": "equal", "value": "notion.query" },
+          { "operation": "equal", "value": "http.request" },
+          { "operation": "equal", "value": "none" }
+        ]
+      }
+    },
+    {
+      "id": "SheetsRead",
+      "name": "Google Sheets:read",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [1500, 340],
+      "credentials": { "googleApi": { "id": "__REPLACE_ME__" } },
+      "parameters": {
+        "operation": "read",
+        "sheetId": "={{ $json.args.spreadsheetId }}",
+        "range": "={{ $json.args.range }}"
+      }
+    },
+    {
+      "id": "SheetsAppend",
+      "name": "Google Sheets:append",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [1500, 420],
+      "credentials": { "googleApi": { "id": "__REPLACE_ME__" } },
+      "parameters": {
+        "operation": "append",
+        "sheetId": "={{ $json.args.spreadsheetId }}",
+        "range": "={{ $json.args.range }}",
+        "options": { "valueInputMode": "RAW" },
+        "values": "={{ $json.args.values }}"
+      }
+    },
+    {
+      "id": "NotionQuery",
+      "name": "Notion:query",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [1500, 500],
+      "credentials": { "notionApi": { "id": "__REPLACE_ME__" } },
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "search",
+        "filters": "={{ $json.args.filters || {} }}",
+        "returnAll": true,
+        "databaseId": "={{ $json.args.databaseId || $env.NOTION_DB_ID || '<NOTION_DB_ID>' }}"
+      }
+    },
+    {
+      "id": "HTTPRequest",
+      "name": "HTTP:request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1500, 580],
+      "parameters": {
+        "url": "={{ $json.args.url }}",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "responseFormat": "json",
+          "timeout": 15000
+        },
+        "authentication": "none",
+        "requestMethod": "={{ $json.args.method || 'GET' }}",
+        "queryParameters": "={{ $json.args.query || {} }}",
+        "jsonParameters": true,
+        "sendBody": "={{ !!$json.args.body }}",
+        "bodyParametersJson": "={{ $json.args.body || {} }}"
+      }
+    },
+    {
+      "id": "NoTool",
+      "name": "Function:none_passthrough",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1500, 660],
+      "parameters": {
+        "functionCode": "return { result: null };"
+      }
+    },
+    {
+      "id": "Assemble",
+      "name": "Function:assemble_reply",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1740, 480],
+      "parameters": {
+        "functionCode": "const tool = $items('Function:parse_tool')[0].json.tool; const summary = $items('Function:parse_tool')[0].json.summary; const pick = (name) => { const it = $items(name); return (it && it[0]) ? it[0].json : null }; const result = { 'google_sheets.read': pick('Google Sheets:read'), 'google_sheets.append': pick('Google Sheets:append'), 'notion.query': pick('Notion:query'), 'http.request': pick('HTTP:request'), 'none': pick('Function:none_passthrough') }[tool] ?? null; return { tool, summary, result };"
+      }
+    },
+    {
+      "id": "Log",
+      "name": "Google Sheets:append_log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [1980, 480],
+      "credentials": { "googleApi": { "id": "__REPLACE_ME__" } },
+      "parameters": {
+        "operation": "append",
+        "sheetId": "={{ $env.LOG_SHEET_ID || '<LOG_SHEET_ID>' }}",
+        "range": "Logs!A:F",
+        "options": { "valueInputMode": "RAW" },
+        "values": "={{ [[ new Date().toISOString(), $items('Function:validate')[0].json.context?.user || 'anon', $items('Function:validate')[0].json.clientId || '', $json.tool, 'ok', '', '' ]] }}"
+      }
+    },
+    {
+      "id": "Respond",
+      "name": "RespondToWebhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2200, 480],
+      "parameters": {
+        "responseCode": 200,
+        "responseBody": "={{ $json }}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [ [ { "node": "Function:validate", "type": "main", "index": 0 } ] ] },
+    "Function:validate": { "main": [ [ { "node": "OpenAI:plan", "type": "main", "index": 0 } ] ] },
+    "OpenAI:plan": { "main": [ [ { "node": "Function:parse_tool", "type": "main", "index": 0 } ] ] },
+    "Function:parse_tool": { "main": [ [ { "node": "IF:needs_approval", "type": "main", "index": 0 } ], [ { "node": "Switch:on.tool", "type": "main", "index": 0 } ] ] },
+    "IF:needs_approval": { "main": [ [ { "node": "Respond:Review Required", "type": "main", "index": 0 } ], [ { "node": "Switch:on.tool", "type": "main", "index": 0 } ] ] },
+    "Switch:on.tool": { "main": [ [ { "node": "Google Sheets:read", "type": "main", "index": 0 } ], [ { "node": "Google Sheets:append", "type": "main", "index": 0 } ], [ { "node": "Notion:query", "type": "main", "index": 0 } ], [ { "node": "HTTP:request", "type": "main", "index": 0 } ], [ { "node": "Function:none_passthrough", "type": "main", "index": 0 } ] ] },
+    "Google Sheets:read": { "main": [ [ { "node": "Function:assemble_reply", "type": "main", "index": 0 } ] ] },
+    "Google Sheets:append": { "main": [ [ { "node": "Function:assemble_reply", "type": "main", "index": 0 } ] ] },
+    "Notion:query": { "main": [ [ { "node": "Function:assemble_reply", "type": "main", "index": 0 } ] ] },
+    "HTTP:request": { "main": [ [ { "node": "Function:assemble_reply", "type": "main", "index": 0 } ] ] },
+    "Function:none_passthrough": { "main": [ [ { "node": "Function:assemble_reply", "type": "main", "index": 0 } ] ] },
+    "Function:assemble_reply": { "main": [ [ { "node": "Google Sheets:append_log", "type": "main", "index": 0 } ] ] },
+    "Google Sheets:append_log": { "main": [ [ { "node": "RespondToWebhook", "type": "main", "index": 0 } ] ] }
+  }
+}

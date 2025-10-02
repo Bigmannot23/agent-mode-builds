@@ -1,0 +1,44 @@
+meta:
+  name: Lexvion Agent Scaffold (Windows)
+  version: 0.1.0
+openai:
+  model: gpt-4o-mini
+  temperature: 0.2
+  response_format: json_object
+contract:
+  # Allowed tools for the planner. The planner must pick one of these values
+  # and return a strictly formatted JSON object: {"tool":"...","args":{...},"summary":"..."}.
+  tool_enum: ["none", "google_sheets.read", "google_sheets.append", "notion.query", "http.request"]
+  # When the planner selects a tool that causes a side‑effect (writes data), it must
+  # include a boolean flag at args.needsApproval. Calls with needsApproval=true
+  # require the caller to send {"approve": true} in the request to proceed.
+  side_effect_flag: needsApproval
+n8n:
+  # Base URL of your n8n instance (e.g. https://n8n.example.com). Set via env or .env.
+  base_url: "https://<N8N_BASE>"
+  # Incoming webhook path for the agent. The full URL will be {base_url}{webhook_path}.
+  webhook_path: "/agent"
+  # Google Sheet used for audit logging. Create a sheet with a tab named Logs and
+  # columns: timestamp,user,clientId,tool,status,tokens,latency.
+  log_sheet_id: "<LOG_SHEET_ID>"
+  log_range: "Logs!A:F"
+tools:
+  # Hostnames allowed for http.request. Only HTTPS is permitted. Edit to suit your
+  # environment. Keeping this list tight prevents SSRF attacks.
+  http_allow_hosts: ["api.notion.com", "sheets.googleapis.com", "hooks.slack.com"]
+  # Allowed ranges for reading and appending in Google Sheets. Each entry is
+  # "SheetName!A:Z" style. Expand as required.
+  sheets_allow_ranges: ["Logs!A:F", "Memory!A:Z"]
+  # Default Notion database ID for notion.query operations. Replace with your DB.
+  notion_default_db: "<NOTION_DB_ID>"
+tests:
+  smoke:
+    - name: no_side_effect
+      payload: { query: "Summarize and ask which tool.", context: { user: "alex" } }
+      expect_substr: "tool"
+    - name: gate_side_effect
+      payload: { query: "Append ok row to Logs!A:F", context: { user: "alex" } }
+      expect_substr: "REVIEW_REQUIRED"
+    - name: approve_side_effect
+      payload: { query: "Append ok row to Logs!A:F", context: { user: "alex" }, approve: true }
+      expect_substr: "ok"
