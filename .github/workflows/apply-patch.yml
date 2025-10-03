@@ -10,8 +10,9 @@ on:
         description: PR body/notes
         required: false
         type: string
-      diff:
-        description: Unified diff (patch)
+      # NEW: Base64 diff input (more reliable than plain multiline text)
+      diff_b64:
+        description: Base64-encoded unified diff
         required: true
         type: string
 
@@ -24,16 +25,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Create branch and apply diff
         run: |
           BRANCH="bot-fix-$(date +%s)"
           git checkout -b "$BRANCH"
-          printf '%s' "${{ inputs.diff }}" > /tmp/patch.diff
+
+          # Decode Base64 into a patch file
+          printf '%s' "${{ inputs.diff_b64 }}" | base64 -d > /tmp/patch.diff
+
+          echo "----- PATCH (first 20 lines) -----"
+          head -n 20 /tmp/patch.diff || true
+          echo "----------------------------------"
+
+          # Validate patch before applying (better error messages)
+          git apply --check -p0 /tmp/patch.diff
+
+          # Apply and commit
           git apply -p0 /tmp/patch.diff
           git add -A
           git -c user.name='chatops-bot' -c user.email='bot@users.noreply.github.com' commit -m "${{ inputs.title }}"
           git push origin "$BRANCH"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
       - name: Open PR
         uses: actions/github-script@v7
         with:
