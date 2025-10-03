@@ -1,0 +1,67 @@
+name: Apply Patch (PR)
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: PR title
+        required: true
+        type: string
+      body:
+        description: PR body/notes
+        required: false
+        type: string
+      diff:
+        description: Unified diff (patch)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create branch and apply diff
+        run: |
+          BRANCH="bot-fix-$(date +%s)"
+          git checkout -b "$BRANCH"
+          printf '%s' "${{ inputs.diff }}" > /tmp/patch.diff
+          git apply -p0 /tmp/patch.diff
+          git add -A
+          git -c user.name='chatops-bot' -c user.email='bot@users.noreply.github.com' commit -m "${{ inputs.title }}"
+          git push origin "$BRANCH"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+      - name: Open PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const res = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: process.env.BRANCH,
+              base: "main",
+              title: core.getInput("title"),
+              body: core.getInput("body") || ""
+            });
+            core.notice(`PR: ${res.data.html_url}`);
+            - name: Setup Go environment
+  uses: actions/setup-go@v6.0.0
+  with:
+    # The Go version to download (if necessary) and use. Supports semver spec and ranges. Be sure to enclose this option in single quotation marks.
+    go-version: # optional
+    # Path to the go.mod or go.work file.
+    go-version-file: # optional
+    # Set this option to true if you want the action to always check for the latest available version that satisfies the version spec
+    check-latest: # optional
+    # Used to pull Go distributions from go-versions. Since there's a default, this is typically not supplied by the user. When running this action on github.com, the default value is sufficient. When running on GHES, you can pass a personal access token for github.com if you are experiencing rate limiting.
+    token: # optional, default is ${{ github.server_url == 'https://github.com' && github.token || '' }}
+    # Used to specify whether caching is needed. Set to true, if you'd like to enable caching.
+    cache: # optional, default is true
+    # Used to specify the path to a dependency file - go.sum
+    cache-dependency-path: # optional
+    # Target architecture for Go to use. Examples: x86, x64. Will use system architecture by default.
+    architecture: # optional
+          
