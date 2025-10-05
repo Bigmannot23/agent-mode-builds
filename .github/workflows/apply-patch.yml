@@ -1,4 +1,5 @@
 name: Apply Patch (PR)
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,10 +11,23 @@ on:
         description: PR body/notes
         required: false
         type: string
-      # NEW: Base64 diff input (more reliable than plain multiline text)
+      branch_base:
+        description: Base branch to merge into
+        required: false
+        default: main
+        type: string
+      # Provide exactly ONE of these three:
       diff_b64:
-        description: Base64-encoded unified diff
-        required: true
+        description: Base64-encoded unified diff (recommended)
+        required: false
+        type: string
+      diff_url:
+        description: URL to a raw .diff/.patch file (fallback)
+        required: false
+        type: string
+      diff_text:
+        description: Raw unified diff text (last resort)
+        required: false
         type: string
 
 permissions:
@@ -25,29 +39,88 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Create branch and apply diff
+      # 1) Build /tmp/patch.diff from whichever input was provided
+      - name: Prepare patch file
+        id: prep
+        shell: bash
         run: |
+          set -euo pipefail
+          DEST=/tmp/patch.diff
+
+          if [ -n "${{ inputs.diff_b64 }}" ]; then
+            echo "Using diff_b64 input"
+            # Use Python to robustly decode Base64, stripping any junk chars
+            DIFF_B64="${{ inputs.diff_b64 }}"
+            python3 - <<'PY' > "$DEST"
+import os, sys, base64, re
+s = os.environ['DIFF_B64']
+s = re.sub(r'[^A-Za-z0-9+/=]', '', s)  # strip whitespace and non-b64
+sys.stdout.buffer.write(base64.b64decode(s))
+PY
+          elif [ -n "${{ inputs.diff_url }}" ]; then
+            echo "Fetching diff from URL: ${{ inputs.diff_url }}"
+            curl -fsSL "${{ inputs.diff_url }}" -o "$DEST"
+          elif [ -n "${{ inputs.diff_text }}" ]; then
+            echo "Using raw diff text"
+            printf '%s' "${{ inputs.diff_text }}" > "$DEST"
+          else
+            echo "::error::Provide one of diff_b64, diff_url, or diff_text"
+            exit 2
+          fi
+
+          # Normalize line endings (remove CR from CRLF)
+          sed -i 's/\r$//' "$DEST"
+
+          echo "----- PATCH PREVIEW (first 30 lines) -----"
+          head -n 30 "$DEST" || true
+          echo "-----------------------------------------"
+
+          bytes=$(wc -c < "$DEST" | tr -d ' ')
+          if [ "$bytes" = "0" ]; then
+            echo "::error::Empty patch after decoding/fetching."
+            exit 2
+          fi
+          echo "size=$bytes" >> "$GITHUB_OUTPUT"
+
+      # 2) Create branch, try -p0/-p1/-p2 automatically, commit, push
+      - name: Create branch and apply diff
+        if: steps.prep.outputs.size != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
           BRANCH="bot-fix-$(date +%s)"
           git checkout -b "$BRANCH"
 
-          # Decode Base64 into a patch file
-          printf '%s' "${{ inputs.diff_b64 }}" | base64 -d > /tmp/patch.diff
+          applied=""
+          for p in 0 1 2; do
+            if git apply --check -p${p} /tmp/patch.diff; then
+              echo "Applying patch with -p${p}"
+              git apply -p${p} /tmp/patch.diff
+              applied="yes"
+              break
+            else
+              echo "Patch did not check with -p${p}; trying next..."
+            fi
+          done
 
-          echo "----- PATCH (first 20 lines) -----"
-          head -n 20 /tmp/patch.diff || true
-          echo "----------------------------------"
+          if [ -z "$applied" ]; then
+            echo "::group::Patch debug (first 160 lines)"
+            sed -n '1,160p' /tmp/patch.diff || true
+            echo "::endgroup::"
+            echo "::error::Patch failed with -p0/-p1/-p2. See preview above."
+            exit 3
+          fi
 
-          # Validate patch before applying (better error messages)
-          git apply --check -p0 /tmp/patch.diff
-
-          # Apply and commit
-          git apply -p0 /tmp/patch.diff
           git add -A
-          git -c user.name='chatops-bot' -c user.email='bot@users.noreply.github.com' commit -m "${{ inputs.title }}"
+          git -c user.name='chatops-bot' -c user.email='bot@users.noreply.github.com' \
+              commit -m "${{ inputs.title }}"
           git push origin "$BRANCH"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
+      # 3) Open the PR
       - name: Open PR
         uses: actions/github-script@v7
         with:
@@ -56,7 +129,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               head: process.env.BRANCH,
-              base: "main",
+              base: core.getInput("branch_base") || "main",
               title: core.getInput("title"),
               body: core.getInput("body") || ""
             });
